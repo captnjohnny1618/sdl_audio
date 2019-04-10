@@ -13,6 +13,7 @@
 #include <boost/filesystem.hpp>
 
 #include "sdl_wrapper.h"
+#include "visualizers.h"
 
 std::random_device rd;     // only used once to initialise (seed) engine
 std::mt19937 rng(rd());    // random-number engine used (Mersenne-Twister in this case)
@@ -25,6 +26,13 @@ enum player_mode{
     MODE_REPEAT_ALL,
     MODE_SHUFFLE
 };
+
+//enum vis_mode{
+//    VIS_SIMPLE,
+//    VIS_BW,
+//    VIS_HACKER,
+//    VIS_EXPERIMENTAL
+//};
 
 struct song{
     uint8_t * song;
@@ -42,15 +50,10 @@ void audio_callback(void * udata, uint8_t * stream, int len){
     curr_song->bytes_played += len;
 }
 
-int visualizer_thread(bool * exit_flag){
-    
-    while (!(*exit_flag)){
-        std::cout << "vis thread" << std::endl;
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    }
+int visualizer_thread(void * udata);
+//void render_frame_old(int16_t * song, size_t samples, uint32_t * vis_array, int w, int h);
 
-    return 0;
-}
+typedef void (*callback)(struct vis_data * v);
 
 class player{
 public:
@@ -67,36 +70,56 @@ public:
     void next_song();
     void prev_song();
 
+    void set_visualization(callback ptr_reg_callback); // function that registers callback with render frame
+    void (*render_frame)(struct vis_data * v);
+
+    // Accessors
+    bool is_exiting(){return exiting;};
+    bool is_playing(){return playing;};    
+    int get_frame_rate(){return frame_rate;};
+    size_t get_buffer_size(){return buffer_size;};
+    size_t get_sampling_rate(){return sampling_rate;};
+    uint32_t * get_visualizer_array(){return visualizer_array;};
+    song * get_song(){return &curr_song;};
+    int get_height(){return visualizer_height;};
+    int get_width(){return visualizer_width;};    
+
 private:
+    
     // Visualizer data
-    bool exiting = false;
-    std::thread v_thread;
-    int visualizer_width        = 512;
-    int visualizer_height       = 512;
+    bool exiting                = false;
+    int curr_vis                = 3;
+    std::vector<callback> visualizations = {simple,simple_bw,hacker,experimental};
+    int frame_rate              = 30;
+    int visualizer_width        = 256;
+    int visualizer_height       = 256;
     uint32_t * visualizer_array = NULL;
 
     // Playlist/player management
     int curr_track   = 0;
     std::vector<std::string> playlist;
-    bool is_playing  = false;
+    bool playing  = false;
     player_mode mode = MODE_NORMAL;
 
     // Audio buffer management
-    SDL_AudioDeviceID dev;
+    SDL_AudioDeviceID dev;    
     song curr_song;
-    size_t buffer_size = 4096;    
+    size_t buffer_size = 4096;
+    size_t sampling_rate = 44100;
 };
 
 player::player(){
     imshow_initialize(visualizer_width,visualizer_height,"color");
     visualizer_array = new uint32_t[visualizer_width*visualizer_height];
     memset(visualizer_array,0,visualizer_width*visualizer_height);
+    set_visualization(visualizations[curr_vis]);
     imshow_update(visualizer_array);
-    std::cout << "launching thread"<< std::endl;
-    v_thread = std::thread(visualizer_thread,&exiting);
+    
+    SDL_CreateThread(visualizer_thread,"visualizer_thread",(void*)this);
 }
-player::~player(){
-    exiting = true;
+player::~player(){    
+    exiting = true;    
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));     // Let the visualizer thread catch up just in case
     delete[] visualizer_array;
     SDL_FreeWAV(curr_song.song);
     imshow_destroy();
@@ -115,7 +138,7 @@ void player::event_loop(){
         // Check if we're ready for the next song
         if (curr_song.bytes_played >= curr_song.total_bytes-buffer_size)
             next_song();
-        
+
         SDL_PollEvent(&e);
 
         // User clicks quit
@@ -126,7 +149,7 @@ void player::event_loop(){
             count = 0;            
             key = e.key.keysym.sym;
             if (key == SDLK_SPACE){
-                if (is_playing)
+                if (playing)
                     pause();
                 else
                     play();
@@ -141,13 +164,13 @@ void player::event_loop(){
                 std::vector<player_mode> modes = {MODE_NORMAL,MODE_REPEAT_ONE,MODE_REPEAT_ALL,MODE_SHUFFLE};
                 auto num = mode;
                 mode = modes[(num+1)%modes.size()];
-
                 std::cout << "Mode: " << mode  << std::endl;
             }
-            else if (key == SDLK_e){
-                exiting = true;
+            else if (key == SDLK_v){
+                auto num = curr_vis;
+                curr_vis = (num+1)%visualizations.size();
+                set_visualization(visualizations[curr_vis]);
             }
-                
             else{
             }
         }
@@ -182,15 +205,15 @@ void player::event_loop(){
 }
 
 void player::play(){
-    is_playing = true;
-    std::cout << "Playing: " << is_playing << std::endl;
-    SDL_PauseAudioDevice(dev,1-is_playing); /* start audio playing. */
+    playing = true;
+    std::cout << "Playing: " << playing << std::endl;
+    SDL_PauseAudioDevice(dev,1-playing); /* start audio playing. */
 }
 
 void player::pause(){
-    is_playing = false;
-    std::cout << "Playing: " << is_playing << std::endl;
-    SDL_PauseAudioDevice(dev,1-is_playing); /* start audio playing. */
+    playing = false;
+    std::cout << "Playing: " << playing << std::endl;
+    SDL_PauseAudioDevice(dev,1-playing); /* start audio playing. */
 }
 
 void player::next_song(){
@@ -227,7 +250,7 @@ void player::prev_song(){
 }
 
 void player::set_track(int idx){
-    bool play_state = is_playing;
+    bool play_state = playing;
     if (play_state ==true){
         pause();
     }
@@ -276,6 +299,7 @@ void player::set_track(int idx){
         else{
             std::cout << "Current track ("  << playlist[curr_track] << ") is in an unsupported filetype. Removing." << std::endl;
             playlist.erase(playlist.begin() + curr_track);
+            idx =-1;
         }
     }
 
@@ -325,9 +349,74 @@ void player::cout_playlist(){
     std::cout << "Current tracklist:" << std::endl;
     for(int i=0;i<playlist.size();i++){
         if (i == curr_track)
-            std::cout << "*** ";
+            std::cout << " -> ";
         else
             std::cout << "    ";
         std::cout <<  i << ": " <<  playlist[i] << std::endl;
     }
+}
+
+int visualizer_thread(void * udata){
+    player * p = (player*)udata;
+    song * s = p->get_song();
+
+    // Get the delay between frames
+    float millis = 1000.0f*1.0f/(float)p->get_frame_rate();
+
+    // Compute samples per visualizer update
+    // Total samples per audio buffer update
+    int samples_per_chunk = p->get_buffer_size();
+    float sec_per_chunk = (float)samples_per_chunk/(float)p->get_sampling_rate();
+    size_t samples_per_frame = p->get_buffer_size()/(p->get_frame_rate()*sec_per_chunk);
+    size_t bytes_per_frame = 4*samples_per_frame;
+
+    int16_t * frame_buffer = new int16_t[bytes_per_frame];
+
+    // Always displaying something until time to quit
+    int frame_ticker = 0;
+    int prev_byte_played = s->bytes_played;
+
+    struct vis_data v;
+    v.w         = p->get_width();
+    v.h         = p->get_height();
+    v.song      = frame_buffer;
+    v.samples   = samples_per_frame;
+    v.vis_array = p->get_visualizer_array();
+
+    while (!(p->is_exiting())){
+        auto start = std::chrono::high_resolution_clock::now();
+        if (!p->is_playing()){
+            // Render "silence" (generate some noise to display, but don't actually send to audio buffer)
+            // Max val of int16: -32768 through 32767
+            float noise_magnitude_percent = 2;
+            int noise_limit = 32767/100*noise_magnitude_percent;
+            for (int i=0;i<2*samples_per_frame;i++){ // factor of 2 since we have LR channels
+                frame_buffer[i] = rand()%((noise_limit - (-noise_limit))+1) + (-noise_limit);
+            }
+        }
+        else{
+            if (s->bytes_played != prev_byte_played){
+                prev_byte_played = s->bytes_played;
+                frame_ticker = 0;
+            }
+            // Copy data into the frame audio buffer and render
+            memcpy(frame_buffer,&s->song[prev_byte_played + frame_ticker * bytes_per_frame],bytes_per_frame);
+            frame_ticker++;
+        }
+        //(p->render_frame)(frame_buffer,samples_per_frame,p->get_visualizer_array(),p->get_width(),p->get_height());
+        (p->render_frame)(&v);
+        imshow_update(p->get_visualizer_array());
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end-start);
+        std::this_thread::sleep_for(std::chrono::milliseconds((int)millis)-duration);
+    }
+
+    std::cout << "Visualizer shutting down" << std::endl;
+    delete[] frame_buffer;
+
+    return 0;
+}
+
+void player::set_visualization(callback render_frame_callback){
+    render_frame = render_frame_callback;
 }
