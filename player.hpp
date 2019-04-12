@@ -75,7 +75,8 @@ public:
 
     // Accessors
     bool is_exiting(){return exiting;};
-    bool is_playing(){return playing;};    
+    bool is_playing(){return playing;};
+    bool is_energy_saver(){return energy_saver;};
     int get_frame_rate(){return frame_rate;};
     size_t get_buffer_size(){return buffer_size;};
     size_t get_sampling_rate(){return sampling_rate;};
@@ -89,10 +90,10 @@ private:
     // Visualizer data
     bool exiting                = false;
     int curr_vis                = 3;
-    std::vector<callback> visualizations = {simple,simple_bw,hacker,experimental};
-    int frame_rate              = 30;
-    int visualizer_width        = 256;
-    int visualizer_height       = 256;
+    std::vector<callback> visualizations = {simple,simple_bw,hacker,experimental,oscilloscope,oscilloscope_fancy};
+    int frame_rate              = 24;
+    int visualizer_width        = 512;
+    int visualizer_height       = 512;
     uint32_t * visualizer_array = NULL;
 
     // Playlist/player management
@@ -100,6 +101,7 @@ private:
     std::vector<std::string> playlist;
     bool playing  = false;
     player_mode mode = MODE_NORMAL;
+    bool energy_saver = true;
 
     // Audio buffer management
     SDL_AudioDeviceID dev;    
@@ -160,6 +162,11 @@ void player::event_loop(){
                 prev_song();            
             else if (key == SDLK_q)
                 quit =true;
+            else if (key == SDLK_e){
+                energy_saver = true - energy_saver;
+                std::cout << "Energy_Saver: " << (energy_saver ? "true":"false") << std::endl;
+            }
+            
             else if (key == SDLK_m){
                 std::vector<player_mode> modes = {MODE_NORMAL,MODE_REPEAT_ONE,MODE_REPEAT_ALL,MODE_SHUFFLE};
                 auto num = mode;
@@ -408,7 +415,8 @@ int visualizer_thread(void * udata){
         imshow_update(p->get_visualizer_array());
         auto end = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end-start);
-        std::this_thread::sleep_for(std::chrono::milliseconds((int)millis)-duration);
+        if (p->is_energy_saver())
+            std::this_thread::sleep_for(std::chrono::milliseconds((int)millis)-duration);
     }
 
     std::cout << "Visualizer shutting down" << std::endl;
